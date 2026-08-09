@@ -1,0 +1,58 @@
+{
+  "name": "hflive-auth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "dev": "WATCHPACK_POLLING=true next dev",
+    "build": "prisma generate && next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "prisma generate && tsc --noEmit",
+    "test": "vitest run",
+    "test:db": "RUN_DATABASE_TESTS=true vitest run src/lib/security/domain-store.integration.test.ts",
+    "test:phase3": "RUN_PHASE3_TESTS=true MAIL_ENABLED=true MAIL_TRANSPORT=smtp MAIL_SMTP_HOST=localhost MAIL_SMTP_PORT=51025 SECURITY_HASH_SECRET=phase3-local-test-secret-000000000 vitest run src/lib/security/phase3-auth.integration.test.ts",
+    "test:phase4": "RUN_PHASE4_TESTS=true SECURITY_HASH_SECRET=phase4-local-test-secret-000000000 OUTBOX_WORKER_SECRET=phase4-local-worker-secret-000000000 vitest run src/lib/security/phase4-internal-apps.integration.test.ts",
+    "test:phase5": "RUN_PHASE5_TESTS=true BETTER_AUTH_URL=http://localhost:3000 BETTER_AUTH_SECRET=phase5-local-auth-secret-0000000000 SECURITY_HASH_SECRET=phase5-local-hash-secret-0000000000 DATABASE_URL=postgresql://hflive:hflive@localhost:55432/hflive_auth DIRECT_DATABASE_URL=postgresql://hflive:hflive@localhost:55432/hflive_auth OBJECT_STORAGE_ENABLED=true S3_ENDPOINT=http://localhost:59000 S3_REGION=auto S3_BUCKET=hflive-auth S3_ACCESS_KEY_ID=hflive S3_SECRET_ACCESS_KEY=hflive-development S3_FORCE_PATH_STYLE=true vitest run src/lib/security/phase5-profile.integration.test.ts",
+    "validate": "pnpm lint && pnpm typecheck && pnpm test",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "user:create-initial": "tsx scripts/create-initial-user.ts",
+    "oidc:smoke": "tsx scripts/oidc-smoke.ts",
+    "oidc:smoke:phase4": "tsx scripts/phase4-oidc-smoke.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1106.0",
+    "@better-auth/oauth-provider": "1.6.26",
+    "@prisma/adapter-pg": "7.9.1",
+    "@prisma/client": "7.9.1",
+    "better-auth": "1.6.26",
+    "dotenv": "17.4.2",
+    "next": "16.3.0",
+    "nodemailer": "^9.0.5",
+    "pg": "8.23.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "sharp": "^0.35.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@better-auth/cli": "1.4.21",
+    "@types/node": "^24.0.0",
+    "@types/nodemailer": "^8.0.1",
+    "@types/pg": "^8.15.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.3.0",
+    "prisma": "7.9.1",
+    "tsx": "4.23.11",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  }
+}

@@ -1,0 +1,210 @@
+# 开发日志
+
+本文件按日期追加已经发生的开发事实、关键问题和验证结果。当前状态不要从日志推断，应读取 [development-progress.md](./development-progress.md)。
+
+## 2026-08-09 — Phase 0/1 初始化
+
+### 方向确认
+
+- 官方域名和 OIDC issuer 确认为 `https://auth.hsfz.live`。
+- 平台限定为 HFLive 内部/批准项目，不开放公共注册或第三方动态 client。
+- 确认用户名或邮箱 + 密码为主登录路径，风险登录未来追加邮箱 OTP。
+- 确认 PostgreSQL-only、Vercel 官方部署与 Docker 自部署两条路径。
+- 确认 LiveBoard 将保留本地会话和应用角色，并在未来增加 `local | hybrid | hflive_oidc`。
+
+### 工程实现
+
+- 初始化 Next.js App Router、React、TypeScript、pnpm 工程。
+- 接入 Better Auth、username、JWT/JWKS 和 OAuth Provider。
+- 接入 Prisma 7 PostgreSQL driver adapter，生成并应用初始 migration。
+- 建立根域 OIDC discovery、OAuth metadata、认证 catch-all 和健康检查。
+- 实现用户名/邮箱单输入框登录和 consent 基础界面。
+- 增加初版深色科技风 token、安全响应头和 robots noindex。
+- 增加 Vercel、standalone Docker、PostgreSQL、MinIO、Mailpit 和 migrator 配置。
+- 增加初始唯一用户脚本和完整 OIDC smoke 脚本。
+
+### 验证中发现并修正
+
+- pnpm 11 阻止依赖构建脚本：建立最小 `allowBuilds` 清单，没有全局放开脚本。
+- TypeScript 7 与当前 typescript-eslint 不兼容：固定到 TypeScript 6.0.3。
+- ESLint 10 与当前 React lint plugin 不兼容：固定到 ESLint 9.39.5。
+- Next.js watcher 在本机触发 `EMFILE`：开发命令启用 `WATCHPACK_POLLING=true`。
+- OAuth Provider 默认 issuer 包含 `/api/auth`：通过 JWT 配置明确固定站点根域 issuer。
+- Docker slim 缺少 OpenSSL：基础镜像安装运行所需 OpenSSL。
+- `.pnpm-store` 导致 Docker context 约 848 MB：补充 `.dockerignore`，复测降至小体积增量。
+- Docker app 与首次生成 JWKS 使用不同 secret，导致私钥解密失败：Compose 改为统一读取 `BETTER_AUTH_SECRET`。
+- 初版 Compose 不自动迁移数据库：增加一次性 migrator，并让 app 等待迁移成功。
+
+### 验收结果
+
+- username 和 email 登录均实际成功。
+- OIDC authorization code + PKCE、state、nonce、consent、access/id/refresh token 和 claims 实际通过。
+- `pnpm validate`、`pnpm build`、Docker image build 通过。
+- migrator 退出码 0，standalone app readiness 返回 HTTP 200。
+- 登录用户创建 OAuth client 被拒绝，符合当前默认关闭管理面的策略。
+- 浏览器检查首页和登录页无横向溢出或控制台错误。
+
+## 2026-08-09 — Phase 2 安全与领域数据
+
+### 目标
+
+- 冻结管理员权限、邀请、受信设备、风险 challenge、审计、头像元数据和 outbox 模型。
+- 把一次性消费、失败计数和事件投递并发语义放入 PostgreSQL。
+- 建立敏感值摘要、保留期和关键管理员操作审计契约。
+
+### 实现
+
+- `User` 增加默认 `USER` 的 `platformRole`，数据层角色变更会锁定 actor、验证 `ADMIN` 并记录成功或拒绝审计。
+- 增加 `Invitation`、`TrustedDevice`、`LoginChallenge`、`AuditEvent`、`ProfileAsset` 和 `OutboxEvent` 模型及枚举、索引、外键和 check constraint。
+- 邀请按规范化邮箱限制一个 pending 记录；邀请和 challenge 通过条件更新只消费一次。
+- challenge 失败计数以单条 SQL 原子递增并在上限锁定。
+- outbox 使用幂等键、`FOR UPDATE SKIP LOCKED`、有界租约、尝试上限、重试和死信状态。
+- 审计事件禁止更新，只有超过 `expiresAt` 才允许删除；actor/subject/client ID 保存为不可变快照。
+- 增加用途隔离 HMAC-SHA-256 摘要工具；生产环境强制独立 `SECURITY_HASH_SECRET`。
+- 增加 Phase 2 数据参考和 `pnpm test:db` 真实 PostgreSQL 集成测试。
+
+### 关键决定或问题
+
+- 并发测试清理用户时发现已接受邀请的 `SET NULL` 与终态约束冲突，修正为以 `acceptedAt` 保留终态事实。
+- 审计用户外键会在账号删除时改写追加式历史，因此移除审计外键，只保留 UUID 快照和查询索引。
+- Compose 的必填变量插值会阻断 dependency-only 命令，改为由生产应用 env schema 在 app 真正启动时校验摘要 secret。
+- 本地 `.env` 未配置新 secret 时，普通 `pnpm build` 按契约拒绝；使用一次性构建占位值验证通过，未修改本地 secret 文件。
+
+### 验证
+
+- 已有 Phase 1 PostgreSQL 数据库原地应用 3 个 Phase 2 migration 通过；全新临时数据库应用全部 4 个 migration 通过。
+- `pnpm test:db`：真实 PostgreSQL 并发测试通过。
+- `pnpm validate`：通过，6 个普通测试通过，数据库集成套件在该命令中按设计跳过。
+- `SECURITY_HASH_SECRET=<build-only> pnpm build`：通过。
+- Docker app/migrator 镜像构建通过；容器 migrator 在空库应用全部 migration 后退出 0。
+- 新 app 镜像连接空库启动，`/api/health/ready` 返回 `200` 与 `database=connected`。
+
+### 遗留事项
+
+- Phase 3 实现邀请/首次密码、邮件 OTP、风险规则和 30 天受信设备业务流程与界面。
+- Phase 4 实现 outbox 投递 worker、Directory API 和客户端管理流程。
+
+## 2026-08-09 — Phase 3 邀请制账号与邮件
+
+### 目标
+
+- 完成管理员邀请、首次设置密码、单输入框登录、邮件 OTP、找回密码和安全提醒。
+- 落实可解释风险规则、30 天受信设备、枚举保护和数据库暴力尝试限制。
+- 提供登录、验证、邀请、恢复和统一错误页面。
+
+### 实现
+
+- 增加 Better Auth 自定义风险认证端点，关闭可绕过风险层的原始密码登录和公开注册端点。
+- 邀请固定创建普通用户，7 天有效；邀请接受在事务中创建 Better Auth credential account 并原子消费 token。
+- 新设备、近期失败、异常频率、IP 与 User-Agent 变化触发 10 分钟邮件 OTP；验证成功后才创建会话，可保存 30 天受信设备。
+- 增加 `AccountStatus` 和 migration；停用账号与不存在账号、错误密码返回统一错误。
+- 增加 SMTP/Mailpit 与通用 HTTP API 邮件 transport、密码恢复、全会话撤销和安全提醒。
+- 增加 Phase 3 页面、移动端样式、`test:phase3` 真实 PostgreSQL + Mailpit 集成测试，并更新 OIDC smoke 使用受保护登录端点。
+
+### 关键决定或问题
+
+- 风险登录必须在 OTP 完成前不创建会话，因此由业务端点直接验证 credential，并仅在普通路径或 challenge 原子消费后调用 Better Auth 会话能力。
+- 自部署可明确关闭邮件：邀请/恢复不可用，风险登录记录 `mailDegraded` 后继续；官方生产仍由 env schema 强制邮件可用。
+- 安全提醒发送失败不能让已经成功的账号创建、密码重置或登录伪装成失败，因此提醒采用不回滚主安全操作的尽力投递；首次邀请和 OTP 发送失败仍会阻断对应流程。
+
+### 验证
+
+- `pnpm validate`：通过，普通套件 9 项通过，数据库专项按设计跳过。
+- `SECURITY_HASH_SECRET=<build-only> pnpm build`：通过，13 个页面/路由完成生产构建。
+- `pnpm db:deploy`：已有 PostgreSQL 原地应用第 5 个 migration；`pnpm test:db` 4 项通过。
+- `pnpm test:phase3`：5 项通过，覆盖受信设备直登、风险 OTP、枚举一致、数据库限流和公开注册关闭。
+- `pnpm oidc:smoke`：更新后的风险认证入口完成 authorization code + PKCE、consent、token 与 claims 回归。
+- Docker app/migrator 新镜像构建通过；migrator 识别 5 个 migration 并退出 0；readiness 200；公开注册端点 404。
+- 浏览器在 1280×720 和 390×844 检查登录、OTP、邀请、恢复和错误页面，无横向溢出或控制台错误；原生控件均在默认 Tab 顺序中。
+
+### 遗留事项
+
+- Phase 4 实现 client/用户/审计管理、Directory API 和可靠 outbox 投递。
+- Phase 5 完成头像对象存储与官方/自部署正式环境验收。
+
+## 2026-08-09 — Phase 4 内部应用管理
+
+### 目标
+
+- 完成管理员 client 生命周期、用户状态和审计控制面。
+- 提供最小权限 Directory API 与可靠、可验签的账号事件。
+- 验收未审批 client、错误 redirect URI、越权 scope 和 secret 一次性展示边界。
+
+### 实现
+
+- `OauthClient` 增加显式审批状态、审批人和时间；数据库约束要求未审批 client 必须停用。新增一对一 `ClientWebhook`，签名 secret 使用 AES-256-GCM 加密。
+- `/admin` 和 `/api/admin/*` 支持 client 创建、回调/scope 维护、停用/恢复、secret 轮换、用户状态和最近审计。OAuth secret 只在创建/轮换响应中出现，数据库只保存 SHA-256 摘要。
+- 授权端点在登录前校验审批、停用状态、精确 redirect URI 与 scope。配置修改、停用和轮换撤销相应 token；配置修改同时撤销旧 consent。
+- 增加 `directory:user:read` 与 `directory:user:status`，仅接受 `client_credentials` access token；拒绝 authorization-code 用户 token。
+- 用户停用在事务中撤销全局 session，并为每个订阅 client 生成独立 outbox。worker 使用 Phase 2 租约/重试/死信原语、10 秒超时、禁止重定向和时间戳 HMAC 签名。
+- Vercel 增加每分钟 cron；生产要求 `OUTBOX_WORKER_SECRET` 或平台 `CRON_SECRET`。增加 Phase 4 参考文档与可自清理的 OIDC smoke fixture。
+
+### 关键决定或问题
+
+- OAuth Provider 的 M2M access token 在当前配置下默认是 opaque token，不应假设总是 JWT。Directory 鉴权同时覆盖数据库摘要 opaque token 与 EdDSA JWT，并在两条路径都重新检查 client、scope、期限和服务主体边界。
+- 首次浏览器验收捕获 React hydration 错误：容器 SSR 与浏览器默认时区不同导致审计时间文本不一致。改为显式 `Asia/Shanghai` 格式化后复测无控制台错误。
+- 第一次 Docker 构建暴露 smoke 脚本动态 import 带 `.ts` 后缀与容器 TypeScript 配置不兼容；修正为无扩展名 import，宿主与容器构建均通过。
+
+### 验证
+
+- 现有 PostgreSQL 原地应用第 6 个 migration；`pnpm test:db` 4 项通过。
+- `pnpm validate`：9 项普通测试通过；`pnpm test:phase3` 5 项和 `pnpm test:phase4` 4 项通过。
+- 生产构建与 Docker app/migrator 镜像构建通过；migrator 识别 6 个 migration 后退出 0；readiness 返回 `200` 与 `database=connected`。
+- `pnpm oidc:smoke:phase4` 使用自动创建并清理的用户/client 完成 authorization code + PKCE、consent、token 与 claims 回归。
+- 浏览器 1280×720 和 390×844 检查 `/admin`：页面无横向溢出；移动表格 `overflow-x:auto`；表单错误可读；修正后无新增控制台错误。
+
+### 遗留事项
+
+- Phase 5 实现头像裁切、对象存储、版本化 URL，并完成 Vercel/R2 与 Docker/MinIO 正式部署验收。
+
+## 2026-08-09 — Phase 5 头像与自部署验收
+
+### 目标
+
+- 完成头像上传、裁切、服务端格式校验、对象存储和版本化资料 URL。
+- 接通 `user.profile.changed` 审计/outbox，并验证 Docker + PostgreSQL + MinIO 路径。
+- 建立 PostgreSQL 与对象 bucket 的一致备份、隔离恢复和回滚操作手册。
+
+### 实现
+
+- 新增 `/profile` 与头像上传/读取 API；浏览器提供缩放和横纵裁切控制，服务端使用 Sharp 重新解码并统一生成 512×512 WebP。
+- S3 兼容存储适配 R2/MinIO；bucket 保持私有，`User.image` 使用同源版本化 API URL，响应使用 immutable cache。
+- 头像替换复用 `ProfileAsset` 状态机；激活时锁定用户、替换旧版本、写入审计，并为每个订阅 client 创建独立资料事件。
+- 官方生产环境强制启用对象存储并校验完整 S3 配置；自部署允许明确降级。
+- Compose 增加幂等 `minio-init`，并用独立 `APP_S3_ENDPOINT` 区分宿主机 `localhost:59000` 与容器 `minio:9000`。
+- 增加 Phase 5 专项真实集成测试、资料/部署参考和备份恢复操作手册。
+
+### 关键决定或问题
+
+- 第一次浏览器上传失败暴露宿主机 S3 endpoint 被原样注入容器；容器中的 `localhost` 指向 app 本身，因此改用 Compose 专用 endpoint 变量。
+- 第一次宿主机备份演练暴露 MinIO 必须启用 path-style；补充 `S3_FORCE_PATH_STYLE=true` 后真实 SDK 写入和清理通过。
+- 测试清理不能删除未到保留期的追加式审计事件；专项测试保留审计快照，只清理自己创建的用户、client、outbox 和对象。
+
+### 验证
+
+- `pnpm validate`：11 项普通测试通过，专项按开关跳过。
+- `pnpm test:phase5`：2 项通过；真实 PostgreSQL + MinIO 验证 PNG/JPEG 解码、512×512 WebP、对象读回、版本替换、用户 URL 和按 client 资料事件。
+- `pnpm build` 与 Compose app/migrator 镜像构建通过；migrator 与 minio-init 退出 0，readiness 返回 200。
+- `pnpm oidc:smoke:phase4`：authorization code + PKCE、state、nonce、consent、token、refresh token 与关键 claims 回归通过。
+- 浏览器真实上传通过；键盘滑杆、成功/错误状态、390×844 无横向溢出且无控制台错误；头像响应为 200、WebP、512×512、immutable cache。
+- PostgreSQL custom dump 与 MinIO mirror 恢复到隔离数据库/bucket；源/恢复用户数均为 3、头像元数据均为 2，两个对象均恢复。隔离资源和测试对象已删除。
+- 重启 PostgreSQL 与 MinIO 容器后用户数保持 2，disposable 对象内容一致，app readiness 仍为 200；对象随后删除。
+
+### 遗留事项
+
+- 当前工作区没有 Vercel、托管 PostgreSQL、R2 和生产邮件 API 的授权配置，因此官方真实环境验收尚未执行。Phase 5 不能标记全部完成，也不能开始生产上线。
+- 获得官方资源后按 Phase 5 参考清单执行 migration、邮件、头像、OIDC/Directory `picture` 和 webhook 全链路验收。
+
+## 后续记录格式
+
+新增日期条目时使用以下结构，并只写实际发生的内容：
+
+```markdown
+## YYYY-MM-DD — 阶段或主题
+
+### 目标
+### 实现
+### 关键决定或问题
+### 验证
+### 遗留事项
+```

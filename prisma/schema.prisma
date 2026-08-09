@@ -1,0 +1,436 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum PlatformRole {
+  USER
+  ADMIN
+}
+
+enum AccountStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
+}
+
+enum LoginChallengeStatus {
+  PENDING
+  CONSUMED
+  LOCKED
+  CANCELLED
+  EXPIRED
+}
+
+enum AuditActorType {
+  USER
+  CLIENT
+  SYSTEM
+}
+
+enum AuditOutcome {
+  SUCCESS
+  FAILURE
+  DENIED
+}
+
+enum AuditSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum ProfileAssetStatus {
+  PENDING
+  ACTIVE
+  REPLACED
+  DELETED
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  DELIVERED
+  DEAD_LETTER
+}
+
+enum ClientApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id                  String              @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  name                String
+  email               String
+  emailVerified       Boolean             @default(false)
+  image               String?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  username            String?
+  displayUsername     String?
+  platformRole        PlatformRole        @default(USER)
+  accountStatus       AccountStatus       @default(ACTIVE)
+  sessions            Session[]
+  accounts            Account[]
+  oauthclients        OauthClient[]
+  oauthrefreshtokens  OauthRefreshToken[]
+  oauthaccesstokens   OauthAccessToken[]
+  oauthconsents       OauthConsent[]
+  invitationsCreated  Invitation[]        @relation("InvitationCreator")
+  invitationsAccepted Invitation[]        @relation("InvitationAcceptor")
+  trustedDevices      TrustedDevice[]
+  loginChallenges     LoginChallenge[]
+  profileAssets       ProfileAsset[]
+  clientsApproved     OauthClient[]       @relation("OauthClientApprover")
+
+  @@unique([email])
+  @@unique([username])
+  @@map("user")
+}
+
+model Invitation {
+  id              String           @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  email           String
+  normalizedEmail String
+  tokenDigest     String           @unique @db.VarChar(80)
+  status          InvitationStatus @default(PENDING)
+  grantedRole     PlatformRole     @default(USER)
+  invitedById     String?          @db.Uuid
+  invitedBy       User?            @relation("InvitationCreator", fields: [invitedById], references: [id], onDelete: SetNull)
+  acceptedById    String?          @db.Uuid
+  acceptedBy      User?            @relation("InvitationAcceptor", fields: [acceptedById], references: [id], onDelete: SetNull)
+  expiresAt       DateTime
+  acceptedAt      DateTime?
+  revokedAt       DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([normalizedEmail, status])
+  @@index([invitedById])
+  @@index([acceptedById])
+  @@index([status, expiresAt])
+  @@map("invitation")
+}
+
+model TrustedDevice {
+  id              String    @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  userId          String    @db.Uuid
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenDigest     String    @unique @db.VarChar(80)
+  label           String?   @db.VarChar(120)
+  userAgentDigest String?   @db.VarChar(80)
+  firstIpDigest   String?   @db.VarChar(80)
+  lastIpDigest    String?   @db.VarChar(80)
+  createdAt       DateTime  @default(now())
+  expiresAt       DateTime
+  lastUsedAt      DateTime  @default(now())
+  revokedAt       DateTime?
+
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
+  @@map("trustedDevice")
+}
+
+model LoginChallenge {
+  id              String               @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  userId          String               @db.Uuid
+  user            User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bindingDigest   String               @unique @db.VarChar(80)
+  otpDigest       String               @db.VarChar(80)
+  status          LoginChallengeStatus @default(PENDING)
+  riskReasons     String[]
+  riskScore       Int                  @default(0)
+  attemptCount    Int                  @default(0)
+  maxAttempts     Int                  @default(5)
+  ipDigest        String?              @db.VarChar(80)
+  userAgentDigest String?              @db.VarChar(80)
+  expiresAt       DateTime
+  consumedAt      DateTime?
+  cancelledAt     DateTime?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  @@index([userId, status])
+  @@index([status, expiresAt])
+  @@map("loginChallenge")
+}
+
+model AuditEvent {
+  id              String         @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  eventType       String         @db.VarChar(100)
+  actorType       AuditActorType
+  actorUserId     String?        @db.Uuid
+  subjectUserId   String?        @db.Uuid
+  clientId        String?        @db.VarChar(255)
+  outcome         AuditOutcome
+  severity        AuditSeverity  @default(INFO)
+  requestId       String?        @db.VarChar(120)
+  ipDigest        String?        @db.VarChar(80)
+  userAgentDigest String?        @db.VarChar(80)
+  metadata        Json?
+  createdAt       DateTime       @default(now())
+  expiresAt       DateTime
+
+  @@index([eventType, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([subjectUserId, createdAt])
+  @@index([clientId, createdAt])
+  @@index([expiresAt])
+  @@map("auditEvent")
+}
+
+model ProfileAsset {
+  id          String             @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  userId      String             @db.Uuid
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  objectKey   String             @unique @db.VarChar(1024)
+  version     Int                @default(1)
+  status      ProfileAssetStatus @default(PENDING)
+  contentType String             @db.VarChar(100)
+  byteSize    BigInt
+  checksum    String             @db.VarChar(128)
+  width       Int?
+  height      Int?
+  createdAt   DateTime           @default(now())
+  activatedAt DateTime?
+  deletedAt   DateTime?
+
+  @@unique([userId, version])
+  @@index([userId, status])
+  @@map("profileAsset")
+}
+
+model OutboxEvent {
+  id             String       @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  aggregateType  String       @db.VarChar(100)
+  aggregateId    String       @db.VarChar(255)
+  eventType      String       @db.VarChar(100)
+  idempotencyKey String       @unique @db.VarChar(255)
+  payload        Json
+  status         OutboxStatus @default(PENDING)
+  attemptCount   Int          @default(0)
+  maxAttempts    Int          @default(10)
+  availableAt    DateTime     @default(now())
+  leaseId        String?      @db.Uuid
+  lockedAt       DateTime?
+  lockedUntil    DateTime?
+  deliveredAt    DateTime?
+  lastErrorCode  String?      @db.VarChar(100)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([status, availableAt])
+  @@index([status, lockedUntil])
+  @@index([aggregateType, aggregateId, createdAt])
+  @@map("outboxEvent")
+}
+
+model Session {
+  id                 String              @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  expiresAt          DateTime
+  token              String
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  ipAddress          String?
+  userAgent          String?
+  userId             String              @db.Uuid
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  oauthrefreshtokens OauthRefreshToken[]
+  oauthaccesstokens  OauthAccessToken[]
+
+  @@unique([token])
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  accountId             String
+  providerId            String
+  userId                String    @db.Uuid
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+model Jwks {
+  id         String    @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  publicKey  String
+  privateKey String
+  createdAt  DateTime
+  expiresAt  DateTime?
+
+  @@map("jwks")
+}
+
+model OauthClient {
+  id                      String               @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  clientId                String
+  clientSecret            String?
+  disabled                Boolean?             @default(false)
+  skipConsent             Boolean?
+  enableEndSession        Boolean?
+  subjectType             String?
+  scopes                  String[]
+  userId                  String?              @db.Uuid
+  user                    User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt               DateTime?
+  updatedAt               DateTime?
+  name                    String?
+  uri                     String?
+  icon                    String?
+  contacts                String[]
+  tos                     String?
+  policy                  String?
+  softwareId              String?
+  softwareVersion         String?
+  softwareStatement       String?
+  redirectUris            String[]
+  postLogoutRedirectUris  String[]
+  tokenEndpointAuthMethod String?
+  grantTypes              String[]
+  responseTypes           String[]
+  public                  Boolean?
+  type                    String?
+  requirePKCE             Boolean?
+  referenceId             String?
+  metadata                Json?
+  approvalStatus          ClientApprovalStatus @default(PENDING)
+  approvedById            String?              @db.Uuid
+  approvedBy              User?                @relation("OauthClientApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt              DateTime?
+  webhooks                ClientWebhook[]
+  oauthrefreshtokens      OauthRefreshToken[]
+  oauthaccesstokens       OauthAccessToken[]
+  oauthconsents           OauthConsent[]
+
+  @@unique([clientId])
+  @@index([userId])
+  @@index([approvalStatus, disabled])
+  @@index([approvedById])
+  @@map("oauthClient")
+}
+
+model ClientWebhook {
+  id                      String      @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  clientId                String      @db.VarChar(255)
+  client                  OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  endpointUrl             String      @db.VarChar(2048)
+  signingSecretCiphertext String      @db.Text
+  eventTypes              String[]
+  active                  Boolean     @default(true)
+  createdAt               DateTime    @default(now())
+  updatedAt               DateTime    @updatedAt
+
+  @@unique([clientId])
+  @@index([active])
+  @@map("clientWebhook")
+}
+
+model OauthRefreshToken {
+  id                String             @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  token             String
+  clientId          String
+  oauthclient       OauthClient        @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  sessionId         String?            @db.Uuid
+  session           Session?           @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  userId            String             @db.Uuid
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  referenceId       String?
+  expiresAt         DateTime?
+  createdAt         DateTime?
+  revoked           DateTime?
+  authTime          DateTime?
+  scopes            String[]
+  oauthaccesstokens OauthAccessToken[]
+
+  @@unique([token])
+  @@index([clientId])
+  @@index([sessionId])
+  @@index([userId])
+  @@map("oauthRefreshToken")
+}
+
+model OauthAccessToken {
+  id                String             @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  token             String?
+  clientId          String
+  oauthclient       OauthClient        @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  sessionId         String?            @db.Uuid
+  session           Session?           @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  userId            String?            @db.Uuid
+  user              User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  referenceId       String?
+  refreshId         String?            @db.Uuid
+  oauthrefreshtoken OauthRefreshToken? @relation(fields: [refreshId], references: [id], onDelete: Cascade)
+  expiresAt         DateTime?
+  createdAt         DateTime?
+  scopes            String[]
+
+  @@unique([token])
+  @@index([clientId])
+  @@index([sessionId])
+  @@index([userId])
+  @@index([refreshId])
+  @@map("oauthAccessToken")
+}
+
+model OauthConsent {
+  id          String      @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  clientId    String
+  oauthclient OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  userId      String?     @db.Uuid
+  user        User?       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  referenceId String?
+  scopes      String[]
+  createdAt   DateTime?
+  updatedAt   DateTime?
+
+  @@index([clientId])
+  @@index([userId])
+  @@map("oauthConsent")
+}
+
+model RateLimit {
+  id          String @id @default(dbgenerated("pg_catalog.gen_random_uuid()")) @db.Uuid
+  key         String
+  count       Int
+  lastRequest BigInt
+
+  @@unique([key])
+  @@map("rateLimit")
+}

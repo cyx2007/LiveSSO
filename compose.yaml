@@ -1,0 +1,116 @@
+name: hflive-auth
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: hflive_auth
+      POSTGRES_USER: hflive
+      POSTGRES_PASSWORD: hflive
+    ports:
+      - "55432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hflive -d hflive_auth"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: hflive
+      MINIO_ROOT_PASSWORD: hflive-development
+    ports:
+      - "59000:9000"
+      - "59001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:latest
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["mc alias set local http://minio:9000 hflive hflive-development && mc mb --ignore-existing local/hflive-auth"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "51025:1025"
+      - "58025:8025"
+    restart: unless-stopped
+
+  migrate:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migrator
+    environment:
+      DIRECT_DATABASE_URL: postgresql://hflive:hflive@postgres:5432/hflive_auth
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      DEPLOYMENT_MODE: self_hosted
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
+      NEXT_PUBLIC_AUTH_URL: ${NEXT_PUBLIC_AUTH_URL:-http://localhost:3000}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}
+      # Keep dependency-only compose commands usable; the production env schema
+      # rejects an empty value when the app profile actually starts.
+      SECURITY_HASH_SECRET: ${SECURITY_HASH_SECRET:-}
+      OUTBOX_WORKER_SECRET: ${OUTBOX_WORKER_SECRET:-}
+      DATABASE_URL: postgresql://hflive:hflive@postgres:5432/hflive_auth
+      DIRECT_DATABASE_URL: postgresql://hflive:hflive@postgres:5432/hflive_auth
+      TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:-http://localhost:3000}
+      MAIL_ENABLED: ${MAIL_ENABLED:-false}
+      MAIL_FROM: ${MAIL_FROM:-HFLive Auth <auth@hsfz.live>}
+      MAIL_TRANSPORT: ${MAIL_TRANSPORT:-smtp}
+      MAIL_SMTP_HOST: ${MAIL_SMTP_HOST:-mailpit}
+      MAIL_SMTP_PORT: ${MAIL_SMTP_PORT:-1025}
+      MAIL_SMTP_SECURE: ${MAIL_SMTP_SECURE:-false}
+      MAIL_SMTP_USER: ${MAIL_SMTP_USER:-}
+      MAIL_SMTP_PASSWORD: ${MAIL_SMTP_PASSWORD:-}
+      MAIL_API_URL: ${MAIL_API_URL:-}
+      MAIL_API_TOKEN: ${MAIL_API_TOKEN:-}
+      OBJECT_STORAGE_ENABLED: ${OBJECT_STORAGE_ENABLED:-true}
+      # Host-side tests use S3_ENDPOINT=http://localhost:59000; containers
+      # need the Compose service address unless explicitly targeting external S3.
+      S3_ENDPOINT: ${APP_S3_ENDPOINT:-http://minio:9000}
+      S3_REGION: ${S3_REGION:-auto}
+      S3_BUCKET: ${S3_BUCKET:-hflive-auth}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-hflive}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-hflive-development}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
+    ports:
+      - "3000:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  minio-data:

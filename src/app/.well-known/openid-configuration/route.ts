@@ -1,0 +1,12 @@
+import { oauthProviderOpenIdConfigMetadata } from "@better-auth/oauth-provider";
+import { auth } from "@/lib/auth";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export const GET = oauthProviderOpenIdConfigMetadata(auth, {
+  headers: {
+    "Cache-Control": "public, max-age=300, stale-while-revalidate=3600",
+  },
+});
+
